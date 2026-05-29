@@ -61,7 +61,7 @@ export class ClaudeMappingService {
         confidence: { type: 'number', minimum: 0, maximum: 1 },
         warnings: { type: 'array', items: { type: 'string' } }
       }
-    } as const;
+    };
 
     const message = await this.client.messages.create({
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
@@ -70,7 +70,7 @@ export class ClaudeMappingService {
         {
           name: 'return_excel_mapping',
           description: 'Return the Excel column mapping to the canonical article schema.',
-          input_schema: mappingSchema,
+          input_schema: mappingSchema as any,
         },
       ],
       tool_choice: { type: 'tool', name: 'return_excel_mapping' },

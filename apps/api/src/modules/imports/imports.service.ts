@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import * as XLSX from 'xlsx';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -17,6 +17,20 @@ type ParsedSheet = {
   headers: string[];
   rows: Record<string, unknown>[];
 };
+
+type NormalizedRow = {
+  code: string;
+  description: string;
+  unitCost: number;
+  currentStock: number | null;
+  totalConsumption: number | null;
+  annualRotation: number | null;
+  avgDailyDemand: number;
+  packaging: string | null;
+  sourceRowNumber: number;
+};
+
+type ValidationWarning = { row: number; field: string; message: string };
 
 @Injectable()
 export class ImportsService {
@@ -43,12 +57,93 @@ export class ImportsService {
         fileHash,
         sheetName: parsed.sheetName,
         mappingJson: mapping as any,
+        headersJson: parsed.headers as any,
+        rawRowsJson: parsed.rows as any,
+        importOptionsJson: options as any,
         rowCount: parsed.rows.length,
         status: 'MAPPING_INFERRED',
       },
     });
 
-    const normalized = this.normalizeRows(parsed.rows, mapping, options);
+    if (mapping.confidence >= 0.85) {
+      return this.applyMappingAndNormalize(importBatch.id, parsed.rows, mapping, options);
+    }
+
+    return {
+      importBatchId: importBatch.id,
+      needsReview: true,
+      mapping,
+      headers: parsed.headers,
+      warnings: mapping.warnings,
+    };
+  }
+
+  async confirmMapping(id: string, confirmedFields: MappingResult['fields']) {
+    const batch = await this.prisma.importBatch.findUnique({ where: { id } });
+    if (!batch) throw new NotFoundException('Import not found');
+    if (batch.status !== 'MAPPING_INFERRED') {
+      throw new BadRequestException('This import has already been confirmed or is not pending review');
+    }
+
+    const existingMapping = batch.mappingJson as MappingResult;
+    const confirmedMapping: MappingResult = { ...existingMapping, fields: confirmedFields, confidence: 1 };
+    const rows = batch.rawRowsJson as Record<string, unknown>[];
+    const options = batch.importOptionsJson as unknown as UploadOptions;
+
+    await this.prisma.importBatch.update({
+      where: { id },
+      data: { mappingJson: confirmedMapping as any },
+    });
+
+    return this.applyMappingAndNormalize(id, rows, confirmedMapping, options ?? { workingDaysPerYear: 220 });
+  }
+
+  async listImports() {
+    return this.prisma.importBatch.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        originalName: true,
+        fileHash: true,
+        sheetName: true,
+        status: true,
+        rowCount: true,
+        errorMessage: true,
+        createdAt: true,
+        mappingJson: true,
+      },
+    });
+  }
+
+  async getImport(id: string) {
+    return this.prisma.importBatch.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        originalName: true,
+        fileHash: true,
+        sheetName: true,
+        status: true,
+        rowCount: true,
+        mappingJson: true,
+        headersJson: true,
+        errorMessage: true,
+        createdAt: true,
+        articleMetrics: { take: 20, include: { article: true } },
+      },
+    });
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────────
+
+  private async applyMappingAndNormalize(
+    importBatchId: string,
+    rows: Record<string, unknown>[],
+    mapping: MappingResult,
+    options: UploadOptions,
+  ) {
+    const { normalized, warnings } = this.validateAndNormalizeRows(rows, mapping, options);
 
     let imported = 0;
     for (const row of normalized) {
@@ -61,7 +156,7 @@ export class ImportsService {
           currentStock: row.currentStock ?? null,
           packaging: row.packaging ?? null,
           isCostException: row.unitCost === 0,
-          lastImportId: importBatch.id,
+          lastImportId: importBatchId,
         },
         update: {
           description: row.description,
@@ -69,14 +164,14 @@ export class ImportsService {
           currentStock: row.currentStock ?? null,
           packaging: row.packaging ?? null,
           isCostException: row.unitCost === 0,
-          lastImportId: importBatch.id,
+          lastImportId: importBatchId,
         },
       });
 
       await this.prisma.articleMetric.create({
         data: {
           articleId: article.id,
-          importBatchId: importBatch.id,
+          importBatchId,
           periodStart: options.periodStart,
           periodEnd: options.periodEnd,
           periodWorkingDays: options.periodWorkingDays,
@@ -90,19 +185,88 @@ export class ImportsService {
     }
 
     await this.prisma.importBatch.update({
-      where: { id: importBatch.id },
+      where: { id: importBatchId },
       data: { status: 'NORMALIZED', rowCount: imported },
     });
 
-    return { importBatchId: importBatch.id, imported, mapping, warnings: mapping.warnings };
+    const qualityWarnings = warnings.map((w) => `Fila ${w.row}: ${w.field} — ${w.message}`);
+    return {
+      importBatchId,
+      imported,
+      mapping,
+      warnings: [...mapping.warnings, ...qualityWarnings],
+    };
   }
 
-  async listImports() {
-    return this.prisma.importBatch.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
-  }
+  private validateAndNormalizeRows(
+    rows: Record<string, unknown>[],
+    mapping: MappingResult,
+    options: UploadOptions,
+  ): { normalized: NormalizedRow[]; warnings: ValidationWarning[] } {
+    const warnings: ValidationWarning[] = [];
+    const seenCodes = new Map<string, number>();
+    const normalized: NormalizedRow[] = [];
 
-  async getImport(id: string) {
-    return this.prisma.importBatch.findUnique({ where: { id }, include: { articleMetrics: { take: 20, include: { article: true } } } });
+    for (const r of rows) {
+      const rowNum = Number(r.__rowNumber ?? 0);
+      const get = (field?: string) => (field ? r[field] : null);
+
+      const code = String(get(mapping.fields.code) ?? '').trim();
+      if (!code) {
+        warnings.push({ row: rowNum, field: 'code', message: 'Codi buit, fila ignorada' });
+        continue;
+      }
+
+      if (seenCodes.has(code)) {
+        warnings.push({ row: rowNum, field: 'code', message: `Codi duplicat "${code}" (ja apareixia a la fila ${seenCodes.get(code)})` });
+        continue;
+      }
+      seenCodes.set(code, rowNum);
+
+      const description = String(get(mapping.fields.description) ?? code).trim();
+      if (!description) {
+        warnings.push({ row: rowNum, field: 'description', message: 'Descripció buida' });
+      }
+
+      const unitCost = this.toNumber(get(mapping.fields.unitCost)) ?? 0;
+      if (unitCost < 0) {
+        warnings.push({ row: rowNum, field: 'unitCost', message: `Cost negatiu (${unitCost})` });
+        continue;
+      }
+
+      const currentStock = mapping.fields.currentStock ? this.toNumber(get(mapping.fields.currentStock)) : null;
+      const rawConsumption = mapping.fields.totalConsumption ? this.toNumber(get(mapping.fields.totalConsumption)) : null;
+      const rawRotation = mapping.fields.annualRotation ? this.toNumber(get(mapping.fields.annualRotation)) : null;
+      const packaging = mapping.fields.packaging ? String(get(mapping.fields.packaging) ?? '').trim() || null : null;
+
+      const totalConsumption = rawConsumption !== null && rawConsumption < 0 ? null : rawConsumption;
+      const annualRotation = rawRotation !== null && rawRotation < 0 ? null : rawRotation;
+
+      if (rawConsumption !== null && rawConsumption < 0) {
+        warnings.push({ row: rowNum, field: 'totalConsumption', message: `Consum negatiu (${rawConsumption}), tractat com a buit` });
+      }
+
+      let avgDailyDemand = 0;
+      if (totalConsumption !== null && options.periodWorkingDays) {
+        avgDailyDemand = totalConsumption / options.periodWorkingDays;
+      } else if (annualRotation !== null) {
+        avgDailyDemand = annualRotation / options.workingDaysPerYear;
+      }
+
+      normalized.push({
+        code,
+        description,
+        unitCost,
+        currentStock,
+        totalConsumption,
+        annualRotation,
+        avgDailyDemand,
+        packaging,
+        sourceRowNumber: rowNum,
+      });
+    }
+
+    return { normalized, warnings };
   }
 
   private parseWorkbook(buffer: Buffer, preferredSheet?: string): ParsedSheet {
@@ -137,51 +301,6 @@ export class ImportsService {
       }
     });
     return best;
-  }
-
-  private normalizeRows(rows: Record<string, unknown>[], mapping: MappingResult, options: UploadOptions) {
-    return rows.map((r) => {
-      const get = (field?: string) => (field ? r[field] : null);
-      const code = String(get(mapping.fields.code) ?? '').trim();
-      if (!code) return null;
-      const description = String(get(mapping.fields.description) ?? code).trim();
-      const unitCost = this.toNumber(get(mapping.fields.unitCost));
-      const currentStock = mapping.fields.currentStock ? this.toNumber(get(mapping.fields.currentStock)) : null;
-      const totalConsumption = mapping.fields.totalConsumption ? this.toNumber(get(mapping.fields.totalConsumption)) : null;
-      const annualRotation = mapping.fields.annualRotation ? this.toNumber(get(mapping.fields.annualRotation)) : null;
-      const packaging = mapping.fields.packaging ? String(get(mapping.fields.packaging) ?? '').trim() : null;
-
-      let avgDailyDemand = 0;
-      if (totalConsumption !== null && options.periodWorkingDays) {
-        avgDailyDemand = totalConsumption / options.periodWorkingDays;
-      } else if (annualRotation !== null) {
-        avgDailyDemand = annualRotation / options.workingDaysPerYear;
-      } else {
-        avgDailyDemand = 0;
-      }
-
-      return {
-        code,
-        description,
-        unitCost,
-        currentStock,
-        totalConsumption,
-        annualRotation,
-        avgDailyDemand,
-        packaging,
-        sourceRowNumber: Number(r.__rowNumber),
-      };
-    }).filter(Boolean) as Array<{
-      code: string;
-      description: string;
-      unitCost: number;
-      currentStock: number | null;
-      totalConsumption: number | null;
-      annualRotation: number | null;
-      avgDailyDemand: number;
-      packaging: string | null;
-      sourceRowNumber: number;
-    }>;
   }
 
   private toNumber(value: unknown): number | null {

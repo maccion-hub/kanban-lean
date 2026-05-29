@@ -1,33 +1,8 @@
 import Link from 'next/link';
-import {
-  KpiCard, Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@kanban/ui';
+import { KpiCard, Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@kanban/ui';
+import ProposalTable from './ProposalTable';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-
-type DiffJson = {
-  newItem?: boolean;
-  deletedItem?: boolean;
-  kminDelta?: number;
-  klotDelta?: number;
-  kmaxDelta?: number;
-  unitCostDelta?: number;
-  avgDailyDemandDelta?: number;
-};
-
-type ProposalItem = {
-  id: string;
-  code: string;
-  description: string;
-  unitCost: string | number;
-  avgDailyDemand: string | number;
-  kmin: number;
-  klot: number;
-  kmax: number;
-  valueAtKmax: string | number;
-  controlType: 'PHYSICAL_SIMPLE' | 'VALIDATION_REQUIRED' | 'COST_ZERO_EXCEPTION';
-  diffJson?: DiffJson;
-};
 
 type Proposal = {
   id: string;
@@ -39,24 +14,11 @@ type Proposal = {
     totalValueAtKmax?: number;
     averageInventoryValue?: number;
     validationRequiredCount?: number;
+    costZeroExceptionCount?: number;
+    top10ByKmaxValue?: { code: string; description: string; valueAtKmax: number }[];
   };
-  items: ProposalItem[];
+  items: any[];
 };
-
-function Delta({ value }: { value: number | undefined }) {
-  if (!value || value === 0) return <span className="text-muted-foreground">—</span>;
-  return (
-    <span className={value > 0 ? 'text-status-ok font-mono font-semibold' : 'text-destructive font-mono font-semibold'}>
-      {value > 0 ? '+' : ''}{value}
-    </span>
-  );
-}
-
-function ControlBadge({ type }: { type: ProposalItem['controlType'] }) {
-  if (type === 'VALIDATION_REQUIRED') return <Badge variant="warn" size="sm">Validació</Badge>;
-  if (type === 'COST_ZERO_EXCEPTION') return <Badge variant="danger" size="sm">Cost zero</Badge>;
-  return <Badge variant="success" size="sm">Simple</Badge>;
-}
 
 export default async function ProposalDetailPage({
   params,
@@ -68,11 +30,14 @@ export default async function ProposalDetailPage({
     cache: 'no-store',
   }).then((r) => r.json());
 
+  const summary = proposal.summaryJson ?? {};
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="mb-1">
             <Link href="/proposals" className="text-muted-foreground text-[12px] hover:text-navy">
               ← Propostes
             </Link>
@@ -93,79 +58,67 @@ export default async function ProposalDetailPage({
         </a>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-5">
         <KpiCard label="Versió" value={`v${proposal.versionNumber}`} accent="navy" />
-        <KpiCard label="Articles" value={proposal.summaryJson?.itemCount ?? '—'} accent="green" />
+        <KpiCard label="Articles" value={summary.itemCount ?? '—'} accent="green" />
         <KpiCard
-          label="Valor Kmax"
-          value={
-            proposal.summaryJson?.totalValueAtKmax != null
-              ? `${Number(proposal.summaryJson.totalValueAtKmax).toLocaleString('ca-ES', { minimumFractionDigits: 0 })} €`
-              : '—'
-          }
+          label="Valor Kmax total"
+          value={summary.totalValueAtKmax != null
+            ? `${Number(summary.totalValueAtKmax).toLocaleString('ca-ES', { minimumFractionDigits: 0 })} €`
+            : '—'}
           accent="blue"
         />
         <KpiCard
-          label="Stock mig"
-          value={
-            proposal.summaryJson?.averageInventoryValue != null
-              ? `${Number(proposal.summaryJson.averageInventoryValue).toLocaleString('ca-ES', { minimumFractionDigits: 0 })} €`
-              : '—'
-          }
+          label="Stock mig estimat"
+          value={summary.averageInventoryValue != null
+            ? `${Number(summary.averageInventoryValue).toLocaleString('ca-ES', { minimumFractionDigits: 0 })} €`
+            : '—'}
           accent="navy"
         />
+        <KpiCard label="Validació manual" value={summary.validationRequiredCount ?? 0} accent="warn" />
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Codi</TableHead>
-            <TableHead>Descripció</TableHead>
-            <TableHead align="right">Cost €</TableHead>
-            <TableHead align="right">Dem/dia</TableHead>
-            <TableHead align="right">Kmin</TableHead>
-            <TableHead align="right">ΔKmin</TableHead>
-            <TableHead align="right">Klot</TableHead>
-            <TableHead align="right">ΔKlot</TableHead>
-            <TableHead align="right">Kmax</TableHead>
-            <TableHead align="right">ΔKmax</TableHead>
-            <TableHead align="right">Val. Kmax €</TableHead>
-            <TableHead align="center">Control</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {proposal.items?.map((item) => (
-            <TableRow key={item.id}>
-              <TableCell>
-                <span className="font-mono text-[12px]">{item.code}</span>
-                {item.diffJson?.newItem && (
-                  <Badge variant="success" size="sm" className="ml-1.5">Nou</Badge>
-                )}
-                {item.diffJson?.deletedItem && (
-                  <Badge variant="danger" size="sm" className="ml-1.5">Eliminat</Badge>
-                )}
-              </TableCell>
-              <TableCell className="max-w-[220px] truncate" title={item.description}>
-                {item.description}
-              </TableCell>
-              <TableCell numeric>{Number(item.unitCost).toFixed(2)}</TableCell>
-              <TableCell numeric>{Number(item.avgDailyDemand).toFixed(3)}</TableCell>
-              <TableCell numeric>{item.kmin}</TableCell>
-              <TableCell align="right"><Delta value={item.diffJson?.kminDelta} /></TableCell>
-              <TableCell numeric>{item.klot}</TableCell>
-              <TableCell align="right"><Delta value={item.diffJson?.klotDelta} /></TableCell>
-              <TableCell numeric>{item.kmax}</TableCell>
-              <TableCell align="right"><Delta value={item.diffJson?.kmaxDelta} /></TableCell>
-              <TableCell numeric>
-                {Number(item.valueAtKmax).toLocaleString('ca-ES', { minimumFractionDigits: 2 })}
-              </TableCell>
-              <TableCell align="center">
-                <ControlBadge type={item.controlType} />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      {/* Top-10 */}
+      {summary.top10ByKmaxValue && summary.top10ByKmaxValue.length > 0 && (
+        <div className="space-y-3">
+          <h2>Top 10 articles per valor Kmax</h2>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>#</TableHead>
+                <TableHead>Codi</TableHead>
+                <TableHead>Descripció</TableHead>
+                <TableHead align="right">Valor Kmax (€)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {summary.top10ByKmaxValue.map((t, i) => (
+                <TableRow key={t.code}>
+                  <TableCell>
+                    <span className="font-display font-bold text-muted-foreground text-[12px]">{i + 1}</span>
+                  </TableCell>
+                  <TableCell>
+                    <span className="font-mono text-[12px]">{t.code}</span>
+                  </TableCell>
+                  <TableCell className="max-w-[300px] truncate">{t.description}</TableCell>
+                  <TableCell numeric>
+                    {Number(t.valueAtKmax).toLocaleString('ca-ES', { minimumFractionDigits: 2 })}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {/* Main table — client component amb filtre + cerca */}
+      <div>
+        <h2>Taula Kanban</h2>
+        <div className="mt-3">
+          <ProposalTable items={proposal.items ?? []} />
+        </div>
+      </div>
     </div>
   );
 }

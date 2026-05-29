@@ -10,7 +10,13 @@ export class ImportsController {
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
   async uploadExcel(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: { sheetName?: string; periodStart?: string; periodEnd?: string; periodWorkingDays?: string; workingDaysPerYear?: string },
+    @Body() body: {
+      sheetName?: string;
+      periodStart?: string;
+      periodEnd?: string;
+      periodWorkingDays?: string;
+      workingDaysPerYear?: string;
+    },
   ) {
     return this.importsService.uploadAndNormalize(file, {
       sheetName: body.sheetName,
@@ -19,6 +25,14 @@ export class ImportsController {
       periodWorkingDays: body.periodWorkingDays ? Number(body.periodWorkingDays) : undefined,
       workingDaysPerYear: body.workingDaysPerYear ? Number(body.workingDaysPerYear) : 220,
     });
+  }
+
+  @Post(':id/confirm-mapping')
+  async confirmMapping(
+    @Param('id') id: string,
+    @Body() body: { fields: Record<string, string> },
+  ) {
+    return this.importsService.confirmMapping(id, body.fields as any);
   }
 
   @Get()
