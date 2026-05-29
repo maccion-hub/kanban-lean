@@ -1,0 +1,11 @@
+# Normalize line endings to LF on commit, checkout as-is on Windows
+* text=auto eol=lf
+
+# Binary files — never touch
+*.xlsx binary
+*.xls  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
