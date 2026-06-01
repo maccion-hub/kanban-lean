@@ -5,6 +5,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { KanbanConfigService } from '../config/kanban-config.service';
 import { calculateKanban, KanbanConfigValues } from './kanban-algorithm';
 
+type EnrichedResult = ReturnType<typeof calculateKanban> & {
+  sourceType: string;
+  sourceValue: number | null;
+  sourceDays: number | null;
+};
+
 @Injectable()
 export class KanbanService {
   constructor(
@@ -28,8 +34,9 @@ export class KanbanService {
     });
 
     const configValues = this.toConfigValues(config);
-    const calculated = metrics.map((m) =>
-      calculateKanban(
+
+    const calculated: EnrichedResult[] = metrics.map((m) => {
+      const result = calculateKanban(
         {
           articleId: m.article.id,
           code: m.article.code,
@@ -38,8 +45,23 @@ export class KanbanService {
           avgDailyDemand: Number(m.avgDailyDemand),
         },
         configValues,
-      ),
-    );
+      );
+
+      const hasPeriodConsumption = m.totalConsumption !== null && m.periodWorkingDays !== null;
+      const sourceType = hasPeriodConsumption
+        ? 'PERIOD_CONSUMPTION'
+        : m.annualRotation !== null
+          ? 'ANNUAL_ROTATION'
+          : 'UNKNOWN';
+      const sourceValue = m.totalConsumption !== null
+        ? Number(m.totalConsumption)
+        : m.annualRotation !== null
+          ? Number(m.annualRotation)
+          : null;
+      const sourceDays = m.periodWorkingDays ?? null;
+
+      return { ...result, sourceType, sourceValue, sourceDays };
+    });
 
     const summary = {
       itemCount: calculated.length,
@@ -95,6 +117,9 @@ export class KanbanService {
           description: item.description,
           unitCost: item.unitCost,
           avgDailyDemand: item.avgDailyDemand,
+          sourceType: item.sourceType,
+          sourceValue: item.sourceValue,
+          sourceDays: item.sourceDays,
           kminRaw: item.kminRaw,
           klotRaw: item.klotRaw,
           kmin: item.kmin,
@@ -153,7 +178,7 @@ export class KanbanService {
       ['Valor estoc mitjà estimat (€)', summary.averageInventoryValue],
       ['', ''],
       ['TOP 10 articles per valor Kmax', ''],
-      ['Codi', 'Valor Kmax (€)'],
+      ['Codi — Descripció', 'Valor Kmax (€)'],
       ...((summary.top10ByKmaxValue as { code: string; description: string; valueAtKmax: number }[]) || []).map((t) => [
         `${t.code} — ${t.description}`,
         t.valueAtKmax,
@@ -183,19 +208,27 @@ export class KanbanService {
     // ── Full 3: Kanban (articles principals) ──────────────────────────────
     const mainItems = items.filter((i) => i.controlType !== 'COST_ZERO_EXCEPTION');
     const kanbanHeader = [
-      'Codi', 'Descripció', 'Cost unit. (€)', 'Dem. diària',
+      'Codi', 'Descripció', 'Cost unit. (€)',
+      'Font de dades', 'Dem. diària (u/dia)',
       'Kmin', 'Klot', 'Kmax',
       'Valor Kmin (€)', 'Valor Kmax (€)', 'Estoc mig ud.', 'Estoc mig (€)',
       'Dies lot', 'Tipus control', 'Justificació',
     ];
-    const kanbanRows = mainItems.map((i) => [
-      i.code, i.description,
-      Number(i.unitCost), Number(i.avgDailyDemand),
-      i.kmin, i.klot, i.kmax,
-      Number(i.valueAtKmin), Number(i.valueAtKmax),
-      Number(i.averageStockUnits), Number(i.averageStockValue),
-      i.lotCoverageDays, i.controlType, i.rationale,
-    ]);
+    const kanbanRows = mainItems.map((i) => {
+      const src = i.sourceType === 'ANNUAL_ROTATION'
+        ? `${Number(i.sourceValue ?? 0).toFixed(0)} u/any`
+        : i.sourceType === 'PERIOD_CONSUMPTION'
+          ? `${Number(i.sourceValue ?? 0).toFixed(0)} u/${i.sourceDays ?? '?'}d`
+          : '—';
+      return [
+        i.code, i.description, Number(i.unitCost),
+        src, Number(i.avgDailyDemand),
+        i.kmin, i.klot, i.kmax,
+        Number(i.valueAtKmin), Number(i.valueAtKmax),
+        Number(i.averageStockUnits), Number(i.averageStockValue),
+        i.lotCoverageDays, i.controlType, i.rationale,
+      ];
+    });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([kanbanHeader, ...kanbanRows]), 'Kanban');
 
     // ── Full 4: Excepcions (cost 0) ───────────────────────────────────────
@@ -212,29 +245,38 @@ export class KanbanService {
       ['GUIA D\'ÚS — KANBAN LEAN'],
       [''],
       ['FÓRMULES'],
-      ['Kmin = Demanda diària × (Lead time + Safety stock)'],
-      ['  Kmin respon a: quan he de reposar?'],
       [''],
-      ['Klot = Demanda diària × Dies de cobertura del lot'],
-      ['  Dies de cobertura depèn del tram de cost:'],
-      ['  · Cost baix (< ' + config.lowCostMax + '€): ' + config.lowCostLotDays + ' dies'],
-      ['  · Cost mig (' + config.lowCostMax + '€ – ' + config.mediumCostMax + '€): ' + config.mediumCostLotDays + ' dies'],
-      ['  · Cost alt (≥ ' + config.mediumCostMax + '€): ' + config.highCostLotDays + ' dies'],
+      ['1. DEMANDA DIÀRIA'],
+      ['   Si l\'Excel porta consum del període:'],
+      ['   Demanda = Consum total / Dies laborables del període'],
+      ['   Si l\'Excel porta rotació anual:'],
+      ['   Demanda = Rotació anual / Dies laborables any (' + config.workingDaysPerYear + 'd)'],
       [''],
-      ['Kmax = Kmin + Klot'],
-      ['  Kmax respon a: quin nivell ha de quedar després de reposar?'],
+      ['2. KMIN — Punt de reposició'],
+      ['   Kmin = Demanda × (Lead time + Dies seguretat)'],
+      ['   = Demanda × (' + config.leadTimeDays + 'd lead + ' + config.safetyStockDays + 'd seguretat)'],
+      ['   Kmin respon a: "quan he de reposar?"'],
+      [''],
+      ['3. KLOT — Lot de reposició'],
+      ['   Klot = Demanda × Dies de cobertura del lot'],
+      ['   Dies de cobertura depèn del tram de cost:'],
+      ['   · Cost baix (< ' + config.lowCostMax + '€): ' + config.lowCostLotDays + ' dies'],
+      ['   · Cost mig (' + config.lowCostMax + '€ – ' + config.mediumCostMax + '€): ' + config.mediumCostLotDays + ' dies'],
+      ['   · Cost alt (≥ ' + config.mediumCostMax + '€): ' + config.highCostLotDays + ' dies'],
+      ['   Klot respon a: "quant he de reposar?"'],
+      [''],
+      ['4. KMAX — Nivell objectiu'],
+      ['   Kmax = Kmin + Klot'],
+      ['   Kmax respon a: "quin nivell ha de quedar al contenidor després de reposar?"'],
+      [''],
+      ['ARRODONIMENT PRÀCTIC'],
+      ['   ≤ 5 ud → múltiple d\'1 | ≤ 20 → múltiple de 5 | ≤ 100 → múltiple de 10'],
+      ['   ≤ 500 → múltiple de 25 | > 500 → múltiple de 50'],
       [''],
       ['TIPUS DE CONTROL'],
-      ['· PHYSICAL_SIMPLE: Kanban físic estàndard'],
-      ['· VALIDATION_REQUIRED: requereix validació per cost o valor elevat'],
-      ['· COST_ZERO_EXCEPTION: cost unitari 0, pendent de validació'],
-      [''],
-      ['ARRODONIMENT PRÀCTIC (per defecte)'],
-      ['· Quantitat ≤ 5 → arrodonir a múltiple d\'1'],
-      ['· Quantitat ≤ 20 → arrodonir a múltiple de 5'],
-      ['· Quantitat ≤ 100 → arrodonir a múltiple de 10'],
-      ['· Quantitat ≤ 500 → arrodonir a múltiple de 25'],
-      ['· Quantitat > 500 → arrodonir a múltiple de 50'],
+      ['   PHYSICAL_SIMPLE: Kanban físic estàndard — gestió visual directa'],
+      ['   VALIDATION_REQUIRED: cost ≥ ' + config.validationUnitCostMin + '€ o valor Kmax ≥ ' + config.validationKmaxValueMin + '€ — requereix validació'],
+      ['   COST_ZERO_EXCEPTION: cost unitari 0 — pendent de validació del cost'],
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(guiaData), 'Guia');
 

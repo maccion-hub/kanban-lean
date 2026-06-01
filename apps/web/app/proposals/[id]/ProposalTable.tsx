@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import { Info } from 'lucide-react';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-  Badge, Input, ToggleGroup, ToggleGroupItem,
+  Badge, Input, Popover, PopoverTrigger, PopoverContent,
 } from '@kanban/ui';
 
 type ControlType = 'PHYSICAL_SIMPLE' | 'VALIDATION_REQUIRED' | 'COST_ZERO_EXCEPTION';
@@ -14,6 +15,9 @@ type ProposalItem = {
   description: string;
   unitCost: string | number;
   avgDailyDemand: string | number;
+  sourceType?: string | null;
+  sourceValue?: string | number | null;
+  sourceDays?: number | null;
   kmin: number;
   klot: number;
   kmax: number;
@@ -23,6 +27,7 @@ type ProposalItem = {
   averageStockValue: string | number;
   lotCoverageDays: number;
   controlType: ControlType;
+  rationale?: string;
   diffJson?: {
     newItem?: boolean;
     deletedItem?: boolean;
@@ -47,6 +52,44 @@ function ControlBadge({ type }: { type: ControlType }) {
   return <Badge variant="success" size="sm">Simple</Badge>;
 }
 
+function SourceMetric({ sourceType, sourceValue, sourceDays }: {
+  sourceType?: string | null;
+  sourceValue?: string | number | null;
+  sourceDays?: number | null;
+}) {
+  if (!sourceType || sourceValue == null) return <span className="text-muted-foreground">—</span>;
+  const val = Number(sourceValue).toLocaleString('ca-ES', { maximumFractionDigits: 0 });
+  if (sourceType === 'ANNUAL_ROTATION') {
+    return <span className="font-mono text-[12px] text-navy">{val} u/any</span>;
+  }
+  if (sourceType === 'PERIOD_CONSUMPTION') {
+    return <span className="font-mono text-[12px] text-navy">{val} u/{sourceDays ?? '?'}d</span>;
+  }
+  return <span className="text-muted-foreground">—</span>;
+}
+
+function RationalePopover({ rationale }: { rationale?: string }) {
+  if (!rationale) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className="inline-flex h-6 w-6 items-center justify-center rounded-[2px] text-muted-foreground hover:text-navy hover:bg-gray-bg transition-colors"
+          title="Veure càlcul detallat"
+        >
+          <Info className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[420px]" align="end">
+        <p className="font-display text-[10px] font-bold uppercase tracking-caps text-muted-foreground mb-2">
+          Càlcul detallat
+        </p>
+        <p className="text-[12px] leading-relaxed text-navy">{rationale}</p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 const FILTER_OPTIONS = [
   { value: 'ALL', label: 'Tots' },
   { value: 'PHYSICAL_SIMPLE', label: 'Simple' },
@@ -62,8 +105,7 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
     return items.filter((i) => {
       const matchesFilter = filter === 'ALL' || i.controlType === filter;
       const q = search.toLowerCase();
-      const matchesSearch =
-        !q || i.code.toLowerCase().includes(q) || i.description.toLowerCase().includes(q);
+      const matchesSearch = !q || i.code.toLowerCase().includes(q) || i.description.toLowerCase().includes(q);
       return matchesFilter && matchesSearch;
     });
   }, [items, search, filter]);
@@ -112,6 +154,7 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
             <TableHead>Codi</TableHead>
             <TableHead>Descripció</TableHead>
             <TableHead align="right">Cost €</TableHead>
+            <TableHead align="right">Font de dades</TableHead>
             <TableHead align="right">Dem/dia</TableHead>
             <TableHead align="right">Kmin</TableHead>
             <TableHead align="right">ΔKmin</TableHead>
@@ -123,12 +166,13 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
             <TableHead align="right">Val. Kmax €</TableHead>
             <TableHead align="right">Estoc mig €</TableHead>
             <TableHead align="center">Control</TableHead>
+            <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
           {visible.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={14} align="center" className="py-8 text-muted-foreground">
+              <TableCell colSpan={16} align="center" className="py-8 text-muted-foreground">
                 Cap article coincideix amb el filtre actual
               </TableCell>
             </TableRow>
@@ -144,10 +188,17 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
                     <Badge variant="danger" size="sm" className="ml-1.5">Eliminat</Badge>
                   )}
                 </TableCell>
-                <TableCell className="max-w-[200px] truncate" title={item.description}>
+                <TableCell className="max-w-[180px] truncate" title={item.description}>
                   {item.description}
                 </TableCell>
                 <TableCell numeric>{Number(item.unitCost).toFixed(2)}</TableCell>
+                <TableCell align="right">
+                  <SourceMetric
+                    sourceType={item.sourceType}
+                    sourceValue={item.sourceValue}
+                    sourceDays={item.sourceDays}
+                  />
+                </TableCell>
                 <TableCell numeric>{Number(item.avgDailyDemand).toFixed(3)}</TableCell>
                 <TableCell numeric>{item.kmin}</TableCell>
                 <TableCell align="right"><Delta value={item.diffJson?.kminDelta} /></TableCell>
@@ -166,6 +217,9 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
                 </TableCell>
                 <TableCell align="center">
                   <ControlBadge type={item.controlType} />
+                </TableCell>
+                <TableCell>
+                  <RationalePopover rationale={item.rationale} />
                 </TableCell>
               </TableRow>
             ))
@@ -188,23 +242,27 @@ export default function ProposalTable({ items }: { items: ProposalItem[] }) {
               <TableRow>
                 <TableHead>Codi</TableHead>
                 <TableHead>Descripció</TableHead>
+                <TableHead align="right">Font de dades</TableHead>
                 <TableHead align="right">Dem. diària</TableHead>
                 <TableHead align="right">Kmin</TableHead>
                 <TableHead align="right">Klot</TableHead>
                 <TableHead align="right">Kmax</TableHead>
+                <TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
               {exceptions.map((item) => (
                 <TableRow key={item.id}>
-                  <TableCell>
-                    <span className="font-mono text-[12px]">{item.code}</span>
-                  </TableCell>
+                  <TableCell><span className="font-mono text-[12px]">{item.code}</span></TableCell>
                   <TableCell>{item.description}</TableCell>
+                  <TableCell align="right">
+                    <SourceMetric sourceType={item.sourceType} sourceValue={item.sourceValue} sourceDays={item.sourceDays} />
+                  </TableCell>
                   <TableCell numeric>{Number(item.avgDailyDemand).toFixed(3)}</TableCell>
                   <TableCell numeric>{item.kmin}</TableCell>
                   <TableCell numeric>{item.klot}</TableCell>
                   <TableCell numeric>{item.kmax}</TableCell>
+                  <TableCell><RationalePopover rationale={item.rationale} /></TableCell>
                 </TableRow>
               ))}
             </TableBody>

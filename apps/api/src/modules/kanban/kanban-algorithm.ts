@@ -55,7 +55,22 @@ export function calculateKanban(article: KanbanInputArticle, config: KanbanConfi
   const averageStockUnits = kmin + klot / 2;
   const averageStockValue = roundMoney(averageStockUnits * article.unitCost);
   const controlType = selectControlType(article.unitCost, valueAtKmax, config);
-  const rationale = buildRationale(article.unitCost, kminCoverageDays, lotCoverageDays, controlType);
+  const rationale = buildRationale({
+    controlType,
+    avgDailyDemand: round(avgDaily, 6),
+    unitCost: article.unitCost,
+    leadTimeDays: config.leadTimeDays,
+    safetyStockDays: config.safetyStockDays,
+    kminCoverageDays,
+    kminRaw: round(kminRaw, 3),
+    kmin,
+    lotCoverageDays,
+    klotRaw: round(klotRaw, 3),
+    klot,
+    kmax,
+    lowCostMax: config.lowCostMax,
+    mediumCostMax: config.mediumCostMax,
+  });
 
   return {
     articleId: article.articleId,
@@ -96,10 +111,49 @@ function selectControlType(unitCost: number, valueAtKmax: number, config: Kanban
   return 'PHYSICAL_SIMPLE' as const;
 }
 
-function buildRationale(unitCost: number, kminDays: number, lotDays: number, controlType: string): string {
-  if (controlType === 'COST_ZERO_EXCEPTION') return 'Article with unit cost 0. Keep as exception until cost is validated.';
-  const mode = controlType === 'VALIDATION_REQUIRED' ? 'Kanban with responsible validation' : 'Simple physical Kanban';
-  return `${mode}. Kmin covers ${kminDays} working days. Klot covers ${lotDays} working days based on unit cost tier.`;
+function buildRationale(p: {
+  controlType: string;
+  avgDailyDemand: number;
+  unitCost: number;
+  leadTimeDays: number;
+  safetyStockDays: number;
+  kminCoverageDays: number;
+  kminRaw: number;
+  kmin: number;
+  lotCoverageDays: number;
+  klotRaw: number;
+  klot: number;
+  kmax: number;
+  lowCostMax: number;
+  mediumCostMax: number;
+}): string {
+  if (p.controlType === 'COST_ZERO_EXCEPTION') {
+    return `Cost unitari 0 — article exclòs del Kanban principal fins validació del cost.`;
+  }
+
+  const costTier =
+    p.unitCost < p.lowCostMax
+      ? `baix (<${p.lowCostMax}€)`
+      : p.unitCost < p.mediumCostMax
+        ? `mig (${p.lowCostMax}–${p.mediumCostMax}€)`
+        : `alt (≥${p.mediumCostMax}€)`;
+
+  const controlNote =
+    p.controlType === 'VALIDATION_REQUIRED'
+      ? `Validació manual requerida (cost ${p.unitCost.toFixed(2)}€ o valor Kmax elevat). `
+      : '';
+
+  return (
+    `${controlNote}` +
+    `Demanda: ${p.avgDailyDemand.toFixed(3)} u/dia. ` +
+    `Kmin = ${p.avgDailyDemand.toFixed(3)} × ${p.kminCoverageDays}d ` +
+    `(${p.leadTimeDays}d lead time + ${p.safetyStockDays}d seguretat) ` +
+    `= ${p.kminRaw.toFixed(2)} → ${p.kmin} u. ` +
+    `Klot = ${p.avgDailyDemand.toFixed(3)} × ${p.lotCoverageDays}d ` +
+    `(cost ${p.unitCost.toFixed(2)}€, tram ${costTier}) ` +
+    `= ${p.klotRaw.toFixed(2)} → ${p.klot} u. ` +
+    `Kmax = ${p.kmin} + ${p.klot} = ${p.kmax} u.`
+  );
 }
 
 function roundMoney(v: number): number {

@@ -8,12 +8,26 @@ export class ArticlesController {
   @Get()
   list(@Query('search') search?: string) {
     return this.prisma.article.findMany({
-      where: search ? {
-        OR: [
-          { code: { contains: search, mode: 'insensitive' } },
-          { description: { contains: search, mode: 'insensitive' } },
-        ],
-      } : {},
+      where: search
+        ? {
+            OR: [
+              { code: { contains: search, mode: 'insensitive' } },
+              { description: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : {},
+      include: {
+        metrics: {
+          orderBy: { createdAt: 'desc' as const },
+          take: 1,
+          select: {
+            avgDailyDemand: true,
+            annualRotation: true,
+            totalConsumption: true,
+            periodWorkingDays: true,
+          },
+        },
+      },
       orderBy: { code: 'asc' },
       take: 200,
     });

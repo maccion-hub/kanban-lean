@@ -2,6 +2,13 @@ import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } 
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+type ArticleMetricSummary = {
+  avgDailyDemand: string | number;
+  annualRotation?: string | number | null;
+  totalConsumption?: string | number | null;
+  periodWorkingDays?: number | null;
+};
+
 type Article = {
   id: string;
   code: string;
@@ -11,7 +18,28 @@ type Article = {
   packaging?: string | null;
   isCostException: boolean;
   updatedAt: string;
+  metrics: ArticleMetricSummary[];
 };
+
+function SourceMetric({ metric }: { metric?: ArticleMetricSummary }) {
+  if (!metric) return <span className="text-muted-foreground">—</span>;
+  if (metric.totalConsumption != null && Number(metric.totalConsumption) > 0) {
+    return (
+      <span className="font-mono text-[12px] text-navy">
+        {Number(metric.totalConsumption).toLocaleString('ca-ES', { maximumFractionDigits: 0 })} u
+        {metric.periodWorkingDays ? `/${metric.periodWorkingDays}d` : ''}
+      </span>
+    );
+  }
+  if (metric.annualRotation != null && Number(metric.annualRotation) > 0) {
+    return (
+      <span className="font-mono text-[12px] text-navy">
+        {Number(metric.annualRotation).toLocaleString('ca-ES', { maximumFractionDigits: 0 })} u/any
+      </span>
+    );
+  }
+  return <span className="text-muted-foreground">—</span>;
+}
 
 export default async function ArticlesPage({
   searchParams,
@@ -60,7 +88,9 @@ export default async function ArticlesPage({
 
       {articles.length === 0 ? (
         <div className="bg-card border border-border/30 rounded-[2px] p-10 text-center text-muted-foreground text-[13px]">
-          {search ? `Cap article coincideix amb "${search}".` : 'Encara no hi ha articles. Importa un Excel primer.'}
+          {search
+            ? `Cap article coincideix amb "${search}".`
+            : 'Encara no hi ha articles. Importa un Excel primer.'}
         </div>
       ) : (
         <Table>
@@ -69,38 +99,53 @@ export default async function ArticlesPage({
               <TableHead>Codi</TableHead>
               <TableHead>Descripció</TableHead>
               <TableHead align="right">Cost unit. €</TableHead>
+              <TableHead align="right">Font consum</TableHead>
+              <TableHead align="right">Dem. diària</TableHead>
               <TableHead align="right">Stock actual</TableHead>
               <TableHead>Packaging</TableHead>
               <TableHead align="center">Estat</TableHead>
-              <TableHead className="text-muted-foreground">Actualitzat</TableHead>
+              <TableHead>Actualitzat</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {articles.map((a) => (
-              <TableRow key={a.id}>
-                <TableCell>
-                  <span className="font-mono text-[12px] text-navy font-semibold">{a.code}</span>
-                </TableCell>
-                <TableCell className="max-w-[260px] truncate" title={a.description}>
-                  {a.description}
-                </TableCell>
-                <TableCell numeric>{Number(a.unitCost).toFixed(4)}</TableCell>
-                <TableCell numeric>
-                  {a.currentStock != null ? Number(a.currentStock).toLocaleString('ca-ES') : '—'}
-                </TableCell>
-                <TableCell className="text-muted-foreground">{a.packaging ?? '—'}</TableCell>
-                <TableCell align="center">
-                  {a.isCostException ? (
-                    <Badge variant="warn" size="sm">Cost zero</Badge>
-                  ) : (
-                    <Badge variant="success" size="sm">OK</Badge>
-                  )}
-                </TableCell>
-                <TableCell className="text-muted-foreground text-[12px]">
-                  {new Date(a.updatedAt).toLocaleDateString('ca-ES')}
-                </TableCell>
-              </TableRow>
-            ))}
+            {articles.map((a) => {
+              const latestMetric = a.metrics?.[0];
+              return (
+                <TableRow key={a.id}>
+                  <TableCell>
+                    <span className="font-mono text-[12px] text-navy font-semibold">{a.code}</span>
+                  </TableCell>
+                  <TableCell className="max-w-[240px] truncate" title={a.description}>
+                    {a.description}
+                  </TableCell>
+                  <TableCell numeric>{Number(a.unitCost).toFixed(4)}</TableCell>
+                  <TableCell align="right">
+                    <SourceMetric metric={latestMetric} />
+                  </TableCell>
+                  <TableCell numeric>
+                    {latestMetric
+                      ? Number(latestMetric.avgDailyDemand).toFixed(3)
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell numeric>
+                    {a.currentStock != null
+                      ? Number(a.currentStock).toLocaleString('ca-ES')
+                      : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{a.packaging ?? '—'}</TableCell>
+                  <TableCell align="center">
+                    {a.isCostException ? (
+                      <Badge variant="warn" size="sm">Cost zero</Badge>
+                    ) : (
+                      <Badge variant="success" size="sm">OK</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-[12px]">
+                    {new Date(a.updatedAt).toLocaleDateString('ca-ES')}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
