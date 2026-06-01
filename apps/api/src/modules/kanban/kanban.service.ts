@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import * as XLSX from 'xlsx';
+import type { KanbanProposalItem } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KanbanConfigService } from '../config/kanban-config.service';
 import { calculateKanban, KanbanConfigValues } from './kanban-algorithm';
@@ -96,7 +97,9 @@ export class KanbanService {
       },
     });
 
-    const previousByCode = new Map((previous?.items || []).map((i) => [i.code, i]));
+    const previousByCode = new Map<string, KanbanProposalItem>(
+      (previous?.items ?? []).map((i) => [i.code, i]),
+    );
     for (const item of calculated) {
       const prev = previousByCode.get(item.code);
       const diffJson = prev
