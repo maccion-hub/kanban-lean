@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
+import { AppSettingsService } from '../settings/app-settings.service';
 
 export type MappingRequest = {
   sheetName: string;
@@ -25,17 +26,18 @@ export type MappingResult = {
 
 @Injectable()
 export class ClaudeMappingService {
-  private readonly client: Anthropic | null;
+  constructor(private readonly settings: AppSettingsService) {}
 
-  constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    this.client = apiKey ? new Anthropic({ apiKey }) : null;
+  private async getClient(): Promise<Anthropic | null> {
+    const envKey = process.env.ANTHROPIC_API_KEY;
+    if (envKey) return new Anthropic({ apiKey: envKey });
+    const dbKey = await this.settings.get('anthropic_api_key');
+    return dbKey ? new Anthropic({ apiKey: dbKey }) : null;
   }
 
   async inferMapping(input: MappingRequest): Promise<MappingResult> {
-    if (!this.client) {
-      return this.heuristicMapping(input);
-    }
+    const client = await this.getClient();
+    if (!client) return this.heuristicMapping(input);
 
     const mappingSchema = {
       type: 'object',
@@ -55,16 +57,16 @@ export class ClaudeMappingService {
             currentStock: { type: 'string' },
             packaging: { type: 'string' },
             totalConsumption: { type: 'string' },
-            annualRotation: { type: 'string' }
-          }
+            annualRotation: { type: 'string' },
+          },
         },
         confidence: { type: 'number', minimum: 0, maximum: 1 },
-        warnings: { type: 'array', items: { type: 'string' } }
-      }
+        warnings: { type: 'array', items: { type: 'string' } },
+      },
     };
 
-    const message = await this.client.messages.create({
-      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
+    const message = await client.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
       max_tokens: 2500,
       tools: [
         {
@@ -87,13 +89,15 @@ export class ClaudeMappingService {
             '- totalConsumption: optional total consumed in the selected period',
             '- annualRotation: optional annualized rotation or units per year',
             'Return only the tool result. Use exact header names from the input.',
-            JSON.stringify(input, null, 2)
-          ].join('\n')
-        }
-      ]
+            JSON.stringify(input, null, 2),
+          ].join('\n'),
+        },
+      ],
     });
 
-    const toolUse = message.content.find((block: any) => block.type === 'tool_use' && block.name === 'return_excel_mapping') as any;
+    const toolUse = message.content.find(
+      (block: any) => block.type === 'tool_use' && block.name === 'return_excel_mapping',
+    ) as any;
     if (!toolUse?.input) {
       throw new InternalServerErrorException('Claude did not return a valid mapping');
     }
@@ -126,7 +130,9 @@ export class ClaudeMappingService {
         ...(annualRotation ? { annualRotation } : {}),
       },
       confidence: 0.55,
-      warnings: ['Heuristic mapping used because ANTHROPIC_API_KEY is not configured. Review mapping before import.'],
+      warnings: [
+        'Mapeig heurístic usat (ANTHROPIC_API_KEY no configurada). Revisa el mapeig a Ajustos.',
+      ],
     };
   }
 }

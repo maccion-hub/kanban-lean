@@ -27,6 +27,12 @@ enum KanbanControlType {
   COST_ZERO_EXCEPTION
 }
 
+model AppSettings {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
 model ImportBatch {
   id                String       @id @default(uuid())
   originalName      String
